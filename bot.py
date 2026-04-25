@@ -1,12 +1,15 @@
 import discord
 import asyncio
 import os
+import io
+from datetime import datetime, timezone
 from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 1491033880491196588
 SUPPORT_ROLE_ID = 1491787311472574654
+LOG_CHANNEL_ID = 1497645297021485146
 
 TICKET_TYPES = {
     "question": {
@@ -68,6 +71,9 @@ TICKET_TYPES = {
     },
 }
 
+# Stockage en mémoire : channel_id -> infos du ticket
+ticket_store: dict[int, dict] = {}
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -84,6 +90,149 @@ class TicketBot(commands.Bot):
 
 bot = TicketBot()
 
+# ── Génération du transcript ──────────────────────────────────────────────────
+async def generate_transcript(channel: discord.TextChannel, ticket_info: dict, closed_by: discord.Member) -> io.BytesIO:
+    now = datetime.now(timezone.utc)
+    lines = []
+
+    lines.append("=" * 70)
+    lines.append("                        TRANSCRIPT DU TICKET")
+    lines.append("=" * 70)
+    lines.append("")
+    lines.append("── INFORMATIONS GÉNÉRALES ──────────────────────────────────────────")
+    lines.append(f"  Salon              : #{channel.name}")
+    lines.append(f"  ID du salon        : {channel.id}")
+    lines.append(f"  Type de ticket     : {ticket_info.get('type_label', 'Inconnu')}")
+    lines.append(f"  Catégorie          : {ticket_info.get('category', 'Inconnue')}")
+    lines.append("")
+    lines.append("── MEMBRE AYANT OUVERT LE TICKET ───────────────────────────────────")
+    opener = ticket_info.get("opener")
+    if opener:
+        lines.append(f"  Pseudo             : {opener.name}")
+        lines.append(f"  Nom affiché        : {opener.display_name}")
+        lines.append(f"  ID                 : {opener.id}")
+        lines.append(f"  Tag complet        : {str(opener)}")
+        lines.append(f"  Compte créé le     : {opener.created_at.strftime('%d/%m/%Y à %H:%M:%S UTC')}")
+        if isinstance(opener, discord.Member) and opener.joined_at:
+            lines.append(f"  A rejoint le       : {opener.joined_at.strftime('%d/%m/%Y à %H:%M:%S UTC')}")
+        roles = [r.name for r in opener.roles if r.name != "@everyone"] if isinstance(opener, discord.Member) else []
+        lines.append(f"  Rôles              : {', '.join(roles) if roles else 'Aucun'}")
+    lines.append("")
+    lines.append("── PRISE EN CHARGE ─────────────────────────────────────────────────")
+    claimed_by = ticket_info.get("claimed_by")
+    if claimed_by:
+        lines.append(f"  Pris en charge par : {claimed_by.display_name} ({claimed_by.id})")
+        claimed_at = ticket_info.get("claimed_at")
+        if claimed_at:
+            lines.append(f"  Pris en charge le  : {claimed_at.strftime('%d/%m/%Y à %H:%M:%S UTC')}")
+    else:
+        lines.append(f"  Pris en charge par : Personne")
+    lines.append("")
+    lines.append("── FERMETURE ───────────────────────────────────────────────────────")
+    lines.append(f"  Fermé par          : {closed_by.display_name} ({closed_by.id})")
+    lines.append(f"  Fermé le           : {now.strftime('%d/%m/%Y à %H:%M:%S UTC')}")
+    opened_at = ticket_info.get("opened_at")
+    if opened_at:
+        lines.append(f"  Ouvert le          : {opened_at.strftime('%d/%m/%Y à %H:%M:%S UTC')}")
+        duration = now - opened_at
+        total_seconds = int(duration.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        lines.append(f"  Durée du ticket    : {hours}h {minutes}m {seconds}s")
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append("                          MESSAGES DU TICKET")
+    lines.append("=" * 70)
+    lines.append("")
+
+    messages = []
+    async for msg in channel.history(limit=None, oldest_first=True):
+        messages.append(msg)
+
+    if not messages:
+        lines.append("  (Aucun message)")
+    else:
+        for msg in messages:
+            timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M:%S UTC")
+            author = f"{msg.author.display_name} ({msg.author.id})"
+            lines.append(f"[{timestamp}] {author}")
+            if msg.content:
+                lines.append(f"  {msg.content}")
+            if msg.attachments:
+                for att in msg.attachments:
+                    lines.append(f"  [Pièce jointe] {att.filename} → {att.url}")
+            if msg.embeds:
+                for embed in msg.embeds:
+                    title = embed.title or "(sans titre)"
+                    lines.append(f"  [Embed] {title}")
+                    if embed.description:
+                        preview = embed.description[:100].replace("\n", " ")
+                        lines.append(f"    {preview}{'...' if len(embed.description) > 100 else ''}")
+            lines.append("")
+
+    lines.append("=" * 70)
+    lines.append(f"  Fin du transcript — généré le {now.strftime('%d/%m/%Y à %H:%M:%S UTC')}")
+    lines.append("=" * 70)
+
+    content = "\n".join(lines)
+    return io.BytesIO(content.encode("utf-8"))
+
+# ── Envoi du log ──────────────────────────────────────────────────────────────
+async def send_log(guild: discord.Guild, channel: discord.TextChannel, ticket_info: dict, closed_by: discord.Member):
+    log_channel = guild.get_channel(LOG_CHANNEL_ID)
+    if log_channel is None:
+        print(f"Salon de logs introuvable (ID: {LOG_CHANNEL_ID})")
+        return
+
+    now = datetime.now(timezone.utc)
+    opener = ticket_info.get("opener")
+    claimed_by = ticket_info.get("claimed_by")
+    opened_at = ticket_info.get("opened_at")
+
+    duration_str = "Inconnue"
+    if opened_at:
+        total_seconds = int((now - opened_at).total_seconds())
+        h, r = divmod(total_seconds, 3600)
+        m, s = divmod(r, 60)
+        duration_str = f"{h}h {m}m {s}s"
+
+    embed = discord.Embed(
+        title=f"Ticket fermé — {ticket_info.get('type_label', 'Inconnu')}",
+        color=0xed4245,
+        timestamp=now
+    )
+    embed.add_field(name="Salon", value=f"`#{channel.name}` (`{channel.id}`)", inline=False)
+    if opener:
+        embed.add_field(
+            name="Ouvert par",
+            value=f"{opener.mention}\n`{opener.name}` • ID : `{opener.id}`",
+            inline=True
+        )
+    embed.add_field(
+        name="Fermé par",
+        value=f"{closed_by.mention}\n`{closed_by.name}` • ID : `{closed_by.id}`",
+        inline=True
+    )
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(
+        name="Pris en charge par",
+        value=f"{claimed_by.mention} (`{claimed_by.id}`)" if claimed_by else "Personne",
+        inline=True
+    )
+    embed.add_field(
+        name="Ouvert le",
+        value=opened_at.strftime("%d/%m/%Y à %H:%M:%S UTC") if opened_at else "Inconnu",
+        inline=True
+    )
+    embed.add_field(name="Durée", value=duration_str, inline=True)
+    embed.set_footer(text=f"Ticket ID : {channel.id}")
+
+    transcript_buf = await generate_transcript(channel, ticket_info, closed_by)
+    file = discord.File(transcript_buf, filename=f"transcript-{channel.name}.txt")
+
+    await log_channel.send(embed=embed, file=file)
+
+# ── Select menu ───────────────────────────────────────────────────────────────
 class TicketSelectMenu(discord.ui.Select):
     def __init__(self):
         options = [
@@ -111,7 +260,6 @@ class TicketSelectMenu(discord.ui.Select):
         data = TICKET_TYPES[ticket_type]
         prefix = data["channel_prefix"]
 
-        # Vérifie si le membre a déjà un ticket ouvert (tous types confondus)
         for key, d in TICKET_TYPES.items():
             existing = discord.utils.get(guild.text_channels, name=f"{d['channel_prefix']}-{member.name.lower()}")
             if existing:
@@ -139,7 +287,16 @@ class TicketSelectMenu(discord.ui.Select):
             topic=f"Ticket de {member} | Type : {data['label']}"
         )
 
-        # Ghost ping
+        # Enregistrement dans le store
+        ticket_store[channel.id] = {
+            "opener": member,
+            "type_label": data["label"],
+            "category": data["category"],
+            "opened_at": datetime.now(timezone.utc),
+            "claimed_by": None,
+            "claimed_at": None,
+        }
+
         if support_role:
             ghost = await channel.send(f"{support_role.mention} {member.mention}")
             await ghost.delete()
@@ -177,6 +334,11 @@ class TicketControlView(discord.ui.View):
         button.label = f"Pris en charge par {interaction.user.display_name}"
         await interaction.response.edit_message(view=self)
 
+        # Mise à jour du store
+        if interaction.channel.id in ticket_store:
+            ticket_store[interaction.channel.id]["claimed_by"] = interaction.user
+            ticket_store[interaction.channel.id]["claimed_at"] = datetime.now(timezone.utc)
+
         embed = discord.Embed(description=f"Ticket pris en charge par {interaction.user.mention}.", color=0x57f287)
         await interaction.channel.send(embed=embed)
 
@@ -194,7 +356,15 @@ class TicketControlView(discord.ui.View):
             color=0xed4245
         )
         await interaction.response.send_message(embed=embed)
+
+        ticket_info = ticket_store.get(interaction.channel.id, {})
+
+        # Envoi du log + transcript avant suppression
+        await send_log(interaction.guild, interaction.channel, ticket_info, interaction.user)
+
         await asyncio.sleep(5)
+
+        ticket_store.pop(interaction.channel.id, None)
         await interaction.channel.delete()
 
 @bot.tree.command(name="panel-ticket", description="Créer le panel de tickets dans ce salon")
