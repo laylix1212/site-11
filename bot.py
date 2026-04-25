@@ -2,6 +2,7 @@ import discord
 import asyncio
 import os
 from datetime import datetime, timezone, timedelta
+from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -13,18 +14,25 @@ intents.message_content = True
 intents.members = True
 intents.moderation = True
 
-bot = commands.Bot(command_prefix="+", intents=intents)
-bot.remove_command("help")
+class ModBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        guild = discord.Object(id=GUILD_ID)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        print("Slash commands synchronisées.")
+
+bot = ModBot()
 
 # ── Utilitaire log ────────────────────────────────────────────────────────────
 async def send_log(guild: discord.Guild, embed: discord.Embed):
     log_channel = guild.get_channel(LOG_CHANNEL_ID)
     if log_channel:
         await log_channel.send(embed=embed)
-    else:
-        print(f"Salon de logs introuvable (ID: {LOG_CHANNEL_ID})")
 
-def log_embed(title: str, fields: list[tuple], staff: discord.Member) -> discord.Embed:
+def log_embed(title: str, fields: list, staff: discord.Member) -> discord.Embed:
     embed = discord.Embed(title=title, color=0x3b82f6, timestamp=datetime.now(timezone.utc))
     for name, value, inline in fields:
         embed.add_field(name=name, value=value, inline=inline)
@@ -35,11 +43,7 @@ def log_embed(title: str, fields: list[tuple], staff: discord.Member) -> discord
     return embed
 
 # ── Parsing durée ─────────────────────────────────────────────────────────────
-def parse_duration(duration_str: str) -> tuple[timedelta | None, str | None]:
-    """
-    Accepte : 10s, 10m, 10h, 1d, 1j
-    Retourne (timedelta, texte lisible) ou (None, None) si invalide
-    """
+def parse_duration(duration_str: str) -> tuple:
     units = {
         "s": ("seconde(s)", 1),
         "m": ("minute(s)", 60),
@@ -48,9 +52,7 @@ def parse_duration(duration_str: str) -> tuple[timedelta | None, str | None]:
         "j": ("jour(s)", 86400),
     }
     duration_str = duration_str.strip().lower()
-    if not duration_str:
-        return None, None
-    unit = duration_str[-1]
+    unit = duration_str[-1] if duration_str else ""
     if unit not in units:
         return None, None
     try:
@@ -62,64 +64,63 @@ def parse_duration(duration_str: str) -> tuple[timedelta | None, str | None]:
     label, multiplier = units[unit]
     return timedelta(seconds=amount * multiplier), f"{amount} {label}"
 
-# ── +clear ─────────────────────────────────────────────────────────────────────
-@bot.command(name="clear")
-@commands.has_permissions(manage_messages=True)
-@commands.guild_only()
-async def clear(ctx: commands.Context, nombre: int):
+# ── /clear ────────────────────────────────────────────────────────────────────
+@bot.tree.command(name="clear", description="Supprimer un nombre de messages dans ce salon")
+@app_commands.describe(nombre="Nombre de messages à supprimer (max 100)")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def clear(interaction: discord.Interaction, nombre: int):
     if nombre < 1 or nombre > 100:
-        await ctx.send("Le nombre doit être compris entre 1 et 100.", delete_after=5)
+        await interaction.response.send_message("Le nombre doit être compris entre 1 et 100.", ephemeral=True)
         return
 
-    await ctx.message.delete()
-    deleted = await ctx.channel.purge(limit=nombre)
+    await interaction.response.defer(ephemeral=True)
+
+    deleted = await interaction.channel.purge(limit=nombre)
     count = len(deleted)
 
-    await ctx.send(f"{count} message(s) supprimé(s).", delete_after=5, silent=True)
+    await interaction.followup.send(f"{count} message(s) supprimé(s).", ephemeral=True)
 
     embed = log_embed(
-        title="Messages supprimés — +clear",
+        title="Messages supprimés — /clear",
         fields=[
-            ("Salon", f"{ctx.channel.mention} (`#{ctx.channel.name}` • `{ctx.channel.id}`)", False),
+            ("Salon", f"{interaction.channel.mention} (`{interaction.channel.id}`)", False),
             ("Nombre demandé", str(nombre), True),
             ("Nombre supprimé", str(count), True),
             ("Date", f"<t:{int(datetime.now(timezone.utc).timestamp())}:F>", False),
         ],
-        staff=ctx.author
+        staff=interaction.user
     )
-    await send_log(ctx.guild, embed)
+    await send_log(interaction.guild, embed)
 
 @clear.error
-async def clear_error(ctx: commands.Context, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("Tu n'as pas la permission de supprimer des messages.", delete_after=5)
-    elif isinstance(error, commands.BadArgument) or isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Utilisation : `+clear <nombre>` (max 100)", delete_after=5)
+async def clear_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("Tu n'as pas la permission de supprimer des messages.", ephemeral=True)
 
-# ── +mute ──────────────────────────────────────────────────────────────────────
-@bot.command(name="mute")
-@commands.has_permissions(moderate_members=True)
-@commands.guild_only()
-async def mute(ctx: commands.Context, membre: discord.Member, duree: str, *, raison: str = "Aucune raison fournie"):
-    await ctx.message.delete()
+# ── /mute ─────────────────────────────────────────────────────────────────────
+@bot.tree.command(name="mute", description="Muter un membre pendant une durée définie")
+@app_commands.describe(
+    membre="Le membre à muter",
+    duree="Durée du mute (ex: 10m, 2h, 1d)",
+    raison="Raison du mute"
+)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def mute(interaction: discord.Interaction, membre: discord.Member, duree: str, raison: str = "Aucune raison fournie"):
+    await interaction.response.defer(ephemeral=True)
 
-    # Vérifications
-    if membre.top_role >= ctx.author.top_role:
-        await ctx.send("Tu ne peux pas mute un membre avec un rôle supérieur ou égal au tien.", delete_after=5)
+    if membre.top_role >= interaction.user.top_role:
+        await interaction.followup.send("Tu ne peux pas muter un membre avec un rôle supérieur ou égal au tien.", ephemeral=True)
         return
-    if membre.id == ctx.guild.me.id:
-        await ctx.send("Je ne peux pas me muter moi-même.", delete_after=5)
+    if membre.id == interaction.guild.me.id:
+        await interaction.followup.send("Je ne peux pas me muter moi-même.", ephemeral=True)
         return
 
     delta, duree_label = parse_duration(duree)
     if delta is None:
-        await ctx.send("Durée invalide. Exemples : `10m`, `1h`, `2d` (s/m/h/d/j)", delete_after=5)
+        await interaction.followup.send("Durée invalide. Exemples : `10s`, `5m`, `2h`, `1d`", ephemeral=True)
         return
-
-    # Discord limite le timeout à 28 jours max
-    max_delta = timedelta(days=28)
-    if delta > max_delta:
-        await ctx.send("La durée maximale est de 28 jours.", delete_after=5)
+    if delta > timedelta(days=28):
+        await interaction.followup.send("La durée maximale est de 28 jours.", ephemeral=True)
         return
 
     until = datetime.now(timezone.utc) + delta
@@ -127,18 +128,18 @@ async def mute(ctx: commands.Context, membre: discord.Member, duree: str, *, rai
     try:
         await membre.timeout(until, reason=raison)
     except discord.Forbidden:
-        await ctx.send("Je n'ai pas la permission de muter ce membre.", delete_after=5)
+        await interaction.followup.send("Je n'ai pas la permission de muter ce membre.", ephemeral=True)
         return
     except discord.HTTPException as e:
-        await ctx.send(f"Erreur lors du mute : {e}", delete_after=5)
+        await interaction.followup.send(f"Erreur : {e}", ephemeral=True)
         return
 
-    # Message privé au membre (sans afficher le modérateur)
+    # MP au membre — sans révéler le modérateur
     try:
         dm_embed = discord.Embed(
             title="Tu as été mis en sourdine",
             description=(
-                f"Tu as été mis en sourdine sur **{ctx.guild.name}**.\n\n"
+                f"Tu as été mis en sourdine sur **{interaction.guild.name}**.\n\n"
                 f"**Durée :** {duree_label}\n"
                 f"**Raison :** {raison}\n\n"
                 f"Tu pourras de nouveau écrire <t:{int(until.timestamp())}:R>."
@@ -146,50 +147,46 @@ async def mute(ctx: commands.Context, membre: discord.Member, duree: str, *, rai
             color=0xed4245,
             timestamp=datetime.now(timezone.utc)
         )
-        dm_embed.set_footer(text=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
+        dm_embed.set_footer(
+            text=interaction.guild.name,
+            icon_url=interaction.guild.icon.url if interaction.guild.icon else None
+        )
         await membre.send(embed=dm_embed)
         dm_sent = True
     except discord.Forbidden:
         dm_sent = False
 
-    await ctx.send(
+    await interaction.followup.send(
         f"{membre.mention} a été mute pendant **{duree_label}**.",
-        delete_after=8,
-        silent=True
+        ephemeral=True
     )
 
     embed = log_embed(
-        title="Membre mute — +mute",
+        title="Membre mute — /mute",
         fields=[
             ("Membre ciblé", f"{membre.mention}\n`{membre.name}` • ID : `{membre.id}`", True),
             ("Durée", duree_label, True),
             ("Expire", f"<t:{int(until.timestamp())}:F>", True),
             ("Raison", raison, False),
-            ("Salon", f"{ctx.channel.mention}", True),
+            ("Salon", f"{interaction.channel.mention}", True),
             ("MP envoyé", "Oui" if dm_sent else "Non (MP fermés)", True),
             ("Date", f"<t:{int(datetime.now(timezone.utc).timestamp())}:F>", False),
         ],
-        staff=ctx.author
+        staff=interaction.user
     )
     embed.set_thumbnail(url=membre.display_avatar.url)
-    await send_log(ctx.guild, embed)
+    await send_log(interaction.guild, embed)
 
 @mute.error
-async def mute_error(ctx: commands.Context, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("Tu n'as pas la permission de muter des membres.", delete_after=5)
-    elif isinstance(error, commands.MemberNotFound):
-        await ctx.send("Membre introuvable.", delete_after=5)
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Utilisation : `+mute <@membre> <durée> [raison]`\nExemple : `+mute @pseudo 10m Spam`", delete_after=8)
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("Membre introuvable.", delete_after=5)
+async def mute_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("Tu n'as pas la permission de muter des membres.", ephemeral=True)
 
 # ── On ready ──────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"Connecté : {bot.user} (ID: {bot.user.id})")
-    print("Commandes disponibles : +clear, +mute")
+    print("Commandes : /clear, /mute")
 
 if __name__ == "__main__":
     if not TOKEN:
