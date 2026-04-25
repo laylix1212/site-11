@@ -52,6 +52,43 @@ async def vocal_autocomplete(interaction: discord.Interaction, current: str) -> 
         if current.lower() in channel.name.lower()
     ][:25]
 
+async def force_connect(channel: discord.VoiceChannel) -> discord.VoiceClient:
+    guild = channel.guild
+
+    # Nettoyage complet de toute connexion existante
+    if guild.voice_client is not None:
+        try:
+            guild.voice_client.stop()
+        except Exception:
+            pass
+        try:
+            await guild.voice_client.disconnect(force=True)
+        except Exception:
+            pass
+        # Attendre que Discord enregistre la déconnexion
+        await asyncio.sleep(2)
+
+    # Plusieurs tentatives de connexion
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            print(f"Tentative de connexion vocale {attempt}/3...")
+            vc = await channel.connect(timeout=60.0, reconnect=True, self_deaf=False, self_mute=False)
+            print(f"Connexion vocale reussie (tentative {attempt})")
+            return vc
+        except Exception as e:
+            last_error = e
+            print(f"Echec tentative {attempt} : {e}")
+            # Forcer le nettoyage entre les tentatives
+            if guild.voice_client is not None:
+                try:
+                    await guild.voice_client.disconnect(force=True)
+                except Exception:
+                    pass
+            await asyncio.sleep(3)
+
+    raise Exception(f"Impossible de se connecter apres 3 tentatives : {last_error}")
+
 @bot.tree.command(name="connecter", description="Connecte le bot a un salon vocal et joue la musique")
 @app_commands.describe(salon="Choisis un salon vocal")
 @app_commands.autocomplete(salon=vocal_autocomplete)
@@ -65,20 +102,10 @@ async def connecter(interaction: discord.Interaction, salon: str):
         await interaction.followup.send("Salon vocal introuvable.", ephemeral=True)
         return
 
-    # Deconnexion propre si deja connecte
-    if guild.voice_client is not None:
-        try:
-            guild.voice_client.stop()
-            await guild.voice_client.disconnect(force=True)
-            await asyncio.sleep(1)
-        except Exception:
-            pass
-
-    # Connexion fraiche
     try:
-        vc = await channel.connect(self_deaf=False, self_mute=False, timeout=30.0, reconnect=False)
+        vc = await force_connect(channel)
     except Exception as e:
-        await interaction.followup.send(f"Erreur de connexion vocale : {e}", ephemeral=True)
+        await interaction.followup.send(f"Erreur : {e}", ephemeral=True)
         return
 
     await asyncio.sleep(1)
@@ -118,7 +145,7 @@ async def reprendre(interaction: discord.Interaction):
 async def on_ready():
     print(f"Connecte : {bot.user} (ID: {bot.user.id})")
     print(f"FFmpeg : {'ok' if os.system('which ffmpeg > /dev/null 2>&1') == 0 else 'INTROUVABLE'}")
-    print(f"music.mp3 : {'trouve' if os.path.exists(MUSIC_FILE) else 'INTROUVABLE - ' + MUSIC_FILE}")
+    print(f"music.mp3 : {'trouve' if os.path.exists(MUSIC_FILE) else 'INTROUVABLE'}")
 
 if __name__ == "__main__":
     if not TOKEN:
