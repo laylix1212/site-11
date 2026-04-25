@@ -10,58 +10,61 @@ SUPPORT_ROLE_ID = 1491787311472574654
 
 TICKET_TYPES = {
     "question": {
-        "category": "\u2192 TICKET QUESTION",
+        "category": "→ TICKET QUESTION",
         "label": "Ticket Question",
-        "emoji": "\u2753",
-        "description": "Poser une question au support",
+        "emoji": "❓",
+        "description": "Une question sur le serveur ou les règles ?",
+        "channel_prefix": "question",
         "embed_title": "Ticket Question",
         "embed_description": (
             "Bonjour {mention},\n\n"
-            "**\u00c0 quoi sert ce ticket ?**\n"
-            "Ce ticket est destin\u00e9 \u00e0 toute question g\u00e9n\u00e9rale que tu souhaites poser \u00e0 l'\u00e9quipe.\n"
-            "Que ce soit une question sur le serveur, les r\u00e8gles, ou autre chose, nous sommes l\u00e0 pour t'aider.\n\n"
-            "**Comment proc\u00e9der ?**\n"
-            "Explique ta question de mani\u00e8re claire et un membre du support te r\u00e9pondra d\u00e8s que possible.\n\n"
-            "Utilise les boutons ci-dessous pour g\u00e9rer ce ticket."
+            "**À quoi sert ce ticket ?**\n"
+            "Ce ticket est destiné à toute question générale que tu souhaites poser à l'équipe.\n"
+            "Que ce soit une question sur le serveur, les règles, ou autre chose, nous sommes là pour t'aider.\n\n"
+            "**Comment procéder ?**\n"
+            "Explique ta question de manière claire et un membre du support te répondra dès que possible.\n\n"
+            "Utilise les boutons ci-dessous pour gérer ce ticket."
         ),
-        "color": 0x5865f2,
+        "color": 0x2b2d31,
     },
     "developpement": {
-        "category": "\u2192 TICKET D\u00c9VELOPPEMENT",
-        "label": "Ticket D\u00e9veloppement",
-        "emoji": "\ud83d\udcbb",
-        "description": "Signaler un bug ou demander une fonctionnalit\u00e9",
-        "embed_title": "Ticket D\u00e9veloppement",
+        "category": "→ TICKET DÉVELOPPEMENT",
+        "label": "Ticket Développement",
+        "emoji": "💻",
+        "description": "Un bug à signaler ou une fonctionnalité à proposer ?",
+        "channel_prefix": "développement",
+        "embed_title": "Ticket Développement",
         "embed_description": (
             "Bonjour {mention},\n\n"
-            "**\u00c0 quoi sert ce ticket ?**\n"
-            "Ce ticket est r\u00e9serv\u00e9 aux sujets li\u00e9s au d\u00e9veloppement : signaler un bug, proposer une nouvelle fonctionnalit\u00e9, "
-            "ou discuter d'am\u00e9liorations techniques.\n\n"
-            "**Comment proc\u00e9der ?**\n"
-            "D\u00e9cris le probl\u00e8me ou ta suggestion de fa\u00e7on d\u00e9taill\u00e9e (captures d'\u00e9cran bienvenues).\n"
-            "Un d\u00e9veloppeur prendra en charge ton ticket rapidement.\n\n"
-            "Utilise les boutons ci-dessous pour g\u00e9rer ce ticket."
+            "**À quoi sert ce ticket ?**\n"
+            "Ce ticket est réservé aux sujets liés au développement : signaler un bug, proposer une nouvelle fonctionnalité, "
+            "ou discuter d'améliorations techniques.\n\n"
+            "**Comment procéder ?**\n"
+            "Décris le problème ou ta suggestion de façon détaillée (captures d'écran bienvenues).\n"
+            "Un développeur prendra en charge ton ticket rapidement.\n\n"
+            "Utilise les boutons ci-dessous pour gérer ce ticket."
         ),
-        "color": 0xeb459e,
+        "color": 0x2b2d31,
     },
     "report": {
-        "category": "\u2192 TICKET REPORT",
+        "category": "→ TICKET REPORT",
         "label": "Ticket Report",
-        "emoji": "\u26a0\ufe0f",
-        "description": "Signaler un membre ou un comportement",
+        "emoji": "⚠️",
+        "description": "Signaler un membre pour un comportement inapproprié ?",
+        "channel_prefix": "report",
         "embed_title": "Ticket Report",
         "embed_description": (
             "Bonjour {mention},\n\n"
-            "**\u00c0 quoi sert ce ticket ?**\n"
-            "Ce ticket te permet de signaler un membre pour un comportement inappropri\u00e9, du harcel\u00e8lement, "
-            "une tricherie, ou toute autre infraction aux r\u00e8gles du serveur.\n\n"
-            "**Comment proc\u00e9der ?**\n"
-            "Indique le pseudo de la personne concern\u00e9e, la date et une description pr\u00e9cise des faits. "
-            "Des preuves (captures d'\u00e9cran) sont fortement recommand\u00e9es.\n"
-            "Ton signalement sera trait\u00e9 en toute confidentialit\u00e9.\n\n"
-            "Utilise les boutons ci-dessous pour g\u00e9rer ce ticket."
+            "**À quoi sert ce ticket ?**\n"
+            "Ce ticket te permet de signaler un membre pour un comportement inapproprié, du harcèlement, "
+            "une tricherie, ou toute autre infraction aux règles du serveur.\n\n"
+            "**Comment procéder ?**\n"
+            "Indique le pseudo de la personne concernée, la date et une description précise des faits. "
+            "Des preuves (captures d'écran) sont fortement recommandées.\n"
+            "Ton signalement sera traité en toute confidentialité.\n\n"
+            "Utilise les boutons ci-dessous pour gérer ce ticket."
         ),
-        "color": 0xed4245,
+        "color": 0x2b2d31,
     },
 }
 
@@ -106,11 +109,14 @@ class TicketSelectMenu(discord.ui.Select):
         member = interaction.user
         ticket_type = self.values[0]
         data = TICKET_TYPES[ticket_type]
+        prefix = data["channel_prefix"]
 
-        existing = discord.utils.get(guild.text_channels, name=f"ticket-{member.name.lower()}")
-        if existing:
-            await interaction.followup.send(f"Tu as déjà un ticket ouvert : {existing.mention}", ephemeral=True)
-            return
+        # Vérifie si le membre a déjà un ticket ouvert (tous types confondus)
+        for key, d in TICKET_TYPES.items():
+            existing = discord.utils.get(guild.text_channels, name=f"{d['channel_prefix']}-{member.name.lower()}")
+            if existing:
+                await interaction.followup.send(f"Tu as déjà un ticket ouvert : {existing.mention}", ephemeral=True)
+                return
 
         category = discord.utils.get(guild.categories, name=data["category"])
         if category is None:
@@ -127,12 +133,13 @@ class TicketSelectMenu(discord.ui.Select):
             overwrites[support_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
         channel = await guild.create_text_channel(
-            name=f"ticket-{member.name.lower()}",
+            name=f"{prefix}-{member.name.lower()}",
             category=category,
             overwrites=overwrites,
             topic=f"Ticket de {member} | Type : {data['label']}"
         )
 
+        # Ghost ping
         if support_role:
             ghost = await channel.send(f"{support_role.mention} {member.mention}")
             await ghost.delete()
@@ -161,10 +168,9 @@ class TicketControlView(discord.ui.View):
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
         is_support = support_role and support_role in interaction.user.roles
-        is_admin = interaction.user.guild_permissions.administrator
 
-        if not is_support and not is_admin:
-            await interaction.response.send_message("Seul le support peut prendre en charge un ticket.", ephemeral=True)
+        if not is_support:
+            await interaction.response.send_message("Seul le rôle Support Ticket peut prendre en charge un ticket.", ephemeral=True)
             return
 
         button.disabled = True
@@ -178,15 +184,15 @@ class TicketControlView(discord.ui.View):
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
         is_support = support_role and support_role in interaction.user.roles
-        is_admin = interaction.user.guild_permissions.administrator
-        opener_name = interaction.channel.name.replace("ticket-", "")
-        is_opener = interaction.user.name.lower() == opener_name
 
-        if not is_support and not is_admin and not is_opener:
-            await interaction.response.send_message("Tu n'as pas la permission de fermer ce ticket.", ephemeral=True)
+        if not is_support:
+            await interaction.response.send_message("Seul le rôle Support Ticket peut fermer un ticket.", ephemeral=True)
             return
 
-        embed = discord.Embed(description=f"Ticket fermé par {interaction.user.mention}. Suppression dans 5 secondes...", color=0xed4245)
+        embed = discord.Embed(
+            description=f"Ticket fermé par {interaction.user.mention}. Suppression dans 5 secondes...",
+            color=0xed4245
+        )
         await interaction.response.send_message(embed=embed)
         await asyncio.sleep(5)
         await interaction.channel.delete()
@@ -196,7 +202,12 @@ class TicketControlView(discord.ui.View):
 async def panel_ticket(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Support",
-        description="Tu as besoin d'aide ?\nSélectionne le type de ticket dans le menu ci-dessous et un membre du support te répondra.",
+        description=(
+            "Tu as besoin d'aide ? Sélectionne le type de ticket ci-dessous.\n\n"
+            "❓ **Ticket Question**\nUne question sur le serveur, les règles ou autre chose.\n\n"
+            "💻 **Ticket Développement**\nSignaler un bug ou proposer une fonctionnalité.\n\n"
+            "⚠️ **Ticket Report**\nSignaler un membre pour comportement inapproprié."
+        ),
         color=0x2b2d31
     )
     if interaction.guild.icon:
