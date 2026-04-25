@@ -4,18 +4,15 @@ import os
 from discord import app_commands
 from discord.ext import commands
 
-# Configuration
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 1491033880491196588
 MUSIC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music.mp3")
 
-# Intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.members = True
 
-# Bot
 class MusicBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
@@ -24,17 +21,13 @@ class MusicBot(commands.Bot):
         guild = discord.Object(id=GUILD_ID)
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
-        print("Slash commands synchronisees !")
+        print("Slash commands synchronisees.")
 
 bot = MusicBot()
 
-# Lecture musique en boucle
 def play_music(vc: discord.VoiceClient):
-    print(f"Tentative de lecture : {MUSIC_FILE}")
-    print(f"Fichier existe : {os.path.exists(MUSIC_FILE)}")
-
     if not os.path.exists(MUSIC_FILE):
-        print(f"Fichier music.mp3 introuvable a : {MUSIC_FILE}")
+        print(f"music.mp3 introuvable : {MUSIC_FILE}")
         return
 
     def after_play(error):
@@ -44,36 +37,22 @@ def play_music(vc: discord.VoiceClient):
         if vc.is_connected():
             play_music(vc)
 
-    ffmpeg_options = {
-        'options': '-vn',
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-    }
-
-    source = discord.FFmpegPCMAudio(MUSIC_FILE, **ffmpeg_options)
+    source = discord.FFmpegPCMAudio(MUSIC_FILE, options="-vn")
     source = discord.PCMVolumeTransformer(source, volume=0.5)
     vc.play(source, after=after_play)
-    print("Lecture lancee en boucle.")
+    print("Musique lancee en boucle.")
 
-# Autocomplete salons vocaux
-async def vocal_autocomplete(
-    interaction: discord.Interaction,
-    current: str,
-) -> list[app_commands.Choice[str]]:
+async def vocal_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
     guild = interaction.guild
     if guild is None:
         return []
-    choices = [
+    return [
         app_commands.Choice(name=channel.name, value=str(channel.id))
         for channel in guild.voice_channels
         if current.lower() in channel.name.lower()
-    ]
-    return choices[:25]
+    ][:25]
 
-# /connecter
-@bot.tree.command(
-    name="connecter",
-    description="Connecte le bot a un salon vocal et joue la musique"
-)
+@bot.tree.command(name="connecter", description="Connecte le bot a un salon vocal et joue la musique")
 @app_commands.describe(salon="Choisis un salon vocal")
 @app_commands.autocomplete(salon=vocal_autocomplete)
 async def connecter(interaction: discord.Interaction, salon: str):
@@ -86,41 +65,37 @@ async def connecter(interaction: discord.Interaction, salon: str):
         await interaction.followup.send("Salon vocal introuvable.", ephemeral=True)
         return
 
+    # Deconnexion propre si deja connecte
     if guild.voice_client is not None:
-        if guild.voice_client.is_playing():
+        try:
             guild.voice_client.stop()
-        await guild.voice_client.move_to(channel)
-        vc = guild.voice_client
-    else:
-        vc = await channel.connect(self_deaf=False, self_mute=False)
+            await guild.voice_client.disconnect(force=True)
+            await asyncio.sleep(1)
+        except Exception:
+            pass
 
-    # Petit delai pour que la connexion soit stable
+    # Connexion fraiche
+    try:
+        vc = await channel.connect(self_deaf=False, self_mute=False, timeout=30.0, reconnect=False)
+    except Exception as e:
+        await interaction.followup.send(f"Erreur de connexion vocale : {e}", ephemeral=True)
+        return
+
     await asyncio.sleep(1)
+    play_music(vc)
 
-    if not vc.is_playing():
-        play_music(vc)
+    await interaction.followup.send(f"Connecte a **#{channel.name}**.", ephemeral=True)
 
-    await interaction.followup.send(
-        f"Connecte a **#{channel.name}** et musique lancee.",
-        ephemeral=True
-    )
-
-# /deconnecter
-@bot.tree.command(
-    name="deconnecter",
-    description="Deconnecte le bot du salon vocal"
-)
+@bot.tree.command(name="deconnecter", description="Deconnecte le bot du salon vocal")
 async def deconnecter(interaction: discord.Interaction):
     guild = interaction.guild
     if guild.voice_client and guild.voice_client.is_connected():
-        if guild.voice_client.is_playing():
-            guild.voice_client.stop()
-        await guild.voice_client.disconnect()
+        guild.voice_client.stop()
+        await guild.voice_client.disconnect(force=True)
         await interaction.response.send_message("Deconnecte.", ephemeral=True)
     else:
         await interaction.response.send_message("Le bot n'est pas dans un salon vocal.", ephemeral=True)
 
-# /pause
 @bot.tree.command(name="pause", description="Met la musique en pause")
 async def pause(interaction: discord.Interaction):
     guild = interaction.guild
@@ -130,7 +105,6 @@ async def pause(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("Aucune musique en cours.", ephemeral=True)
 
-# /reprendre
 @bot.tree.command(name="reprendre", description="Reprend la musique")
 async def reprendre(interaction: discord.Interaction):
     guild = interaction.guild
@@ -140,13 +114,12 @@ async def reprendre(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("La musique n'est pas en pause.", ephemeral=True)
 
-# On ready
 @bot.event
 async def on_ready():
-    print(f"Connecte en tant que {bot.user} (ID: {bot.user.id})")
-    print(f"Fichier musique : {'trouve -> ' + MUSIC_FILE if os.path.exists(MUSIC_FILE) else 'MANQUANT -> ' + MUSIC_FILE}")
+    print(f"Connecte : {bot.user} (ID: {bot.user.id})")
+    print(f"FFmpeg : {'ok' if os.system('which ffmpeg > /dev/null 2>&1') == 0 else 'INTROUVABLE'}")
+    print(f"music.mp3 : {'trouve' if os.path.exists(MUSIC_FILE) else 'INTROUVABLE - ' + MUSIC_FILE}")
 
-# Lancement
 if __name__ == "__main__":
     if not TOKEN:
         raise ValueError("DISCORD_TOKEN manquant !")
