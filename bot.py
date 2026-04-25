@@ -1,20 +1,19 @@
 import discord
 import asyncio
 import os
-import sys
 from discord import app_commands
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = 1491033880491196588
-MUSIC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music.mp3")
+SUPPORT_ROLE_ID = 1491787311472574654
+TICKET_CATEGORY_NAME = "→ TICKET QUESTION"
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
 intents.members = True
 
-class MusicBot(commands.Bot):
+class TicketBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
 
@@ -24,159 +23,137 @@ class MusicBot(commands.Bot):
         await self.tree.sync(guild=guild)
         print("Slash commands synchronisees.")
 
-bot = MusicBot()
+bot = TicketBot()
 
-def play_music(vc: discord.VoiceClient):
-    if not os.path.exists(MUSIC_FILE):
-        print(f"music.mp3 introuvable : {MUSIC_FILE}")
-        return
+class TicketSelectMenu(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="Question",
+                description="Poser une question au support",
+                emoji="❓",
+                value="question"
+            ),
+        ]
+        super().__init__(
+            placeholder="Selectionner le type de ticket...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="ticket_select"
+        )
 
-    def after_play(error):
-        if error:
-            print(f"Erreur lecture : {error}")
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+
+        existing = discord.utils.get(guild.text_channels, name=f"ticket-{member.name.lower()}")
+        if existing:
+            await interaction.followup.send(f"Tu as deja un ticket ouvert : {existing.mention}", ephemeral=True)
             return
-        if vc.is_connected():
-            play_music(vc)
 
-    # Cherche ffmpeg dans plusieurs endroits possibles
-    ffmpeg_path = "ffmpeg"
-    for path in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/nix/store"]:
-        if os.path.isfile(path):
-            ffmpeg_path = path
-            break
-        if path == "/nix/store" and os.path.isdir(path):
-            # cherche dans nix store
-            for root, dirs, files in os.walk(path):
-                if "ffmpeg" in files:
-                    ffmpeg_path = os.path.join(root, "ffmpeg")
-                    break
+        category = discord.utils.get(guild.categories, name=TICKET_CATEGORY_NAME)
+        if category is None:
+            category = await guild.create_category(TICKET_CATEGORY_NAME)
 
-    print(f"Utilisation ffmpeg : {ffmpeg_path}")
-    source = discord.FFmpegPCMAudio(MUSIC_FILE, executable=ffmpeg_path, options="-vn")
-    source = discord.PCMVolumeTransformer(source, volume=0.5)
-    vc.play(source, after=after_play)
-    print("Musique lancee en boucle.")
+        support_role = guild.get_role(SUPPORT_ROLE_ID)
 
-async def vocal_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    guild = interaction.guild
-    if guild is None:
-        return []
-    return [
-        app_commands.Choice(name=channel.name, value=str(channel.id))
-        for channel in guild.voice_channels
-        if current.lower() in channel.name.lower()
-    ][:25]
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
+        }
+        if support_role:
+            overwrites[support_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-async def connect_voice(channel: discord.VoiceChannel) -> discord.VoiceClient:
-    guild = channel.guild
+        channel = await guild.create_text_channel(
+            name=f"ticket-{member.name.lower()}",
+            category=category,
+            overwrites=overwrites,
+            topic=f"Ticket de {member} | Type : Question"
+        )
 
-    # Nettoyage complet
-    if guild.voice_client is not None:
-        try:
-            guild.voice_client.stop()
-        except Exception:
-            pass
-        try:
-            await guild.voice_client.disconnect(force=True)
-        except Exception:
-            pass
-        await asyncio.sleep(3)
+        if support_role:
+            ghost = await channel.send(f"{support_role.mention} {member.mention}")
+            await ghost.delete()
 
-    # Reconnexion du gateway principal pour reset la session voice
-    try:
-        await bot.ws.voice_state(guild.id, None)
-        await asyncio.sleep(2)
-    except Exception as e:
-        print(f"Reset voice state: {e}")
+        embed = discord.Embed(
+            title="Ticket Question",
+            description=f"Bonjour {member.mention},\n\nExplique ta question et un membre du support te repondra rapidement.\n\nUtilise les boutons ci-dessous pour gerer ce ticket.",
+            color=0x2b2d31
+        )
+        embed.set_footer(text=f"Ticket ouvert par {member}", icon_url=member.display_avatar.url)
 
-    # Tentatives de connexion
-    for attempt in range(1, 6):
-        try:
-            print(f"Tentative {attempt}/5...")
-            vc = await asyncio.wait_for(
-                channel.connect(reconnect=True, self_deaf=False, self_mute=False),
-                timeout=30.0
-            )
-            print(f"Connexion reussie tentative {attempt}")
-            return vc
-        except asyncio.TimeoutError:
-            print(f"Timeout tentative {attempt}")
-        except discord.errors.ConnectionClosed as e:
-            print(f"ConnectionClosed {e.code} tentative {attempt}")
-            if guild.voice_client:
-                try:
-                    await guild.voice_client.disconnect(force=True)
-                except Exception:
-                    pass
-            # Reset voice state entre les tentatives
-            try:
-                await bot.ws.voice_state(guild.id, None)
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"Erreur tentative {attempt} : {e}")
-        await asyncio.sleep(4)
+        view = TicketControlView()
+        await channel.send(embed=embed, view=view)
+        await interaction.followup.send(f"Ton ticket a ete cree : {channel.mention}", ephemeral=True)
 
-    raise Exception("Impossible de se connecter au salon vocal apres 5 tentatives.")
+class TicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(TicketSelectMenu())
 
-@bot.tree.command(name="connecter", description="Connecte le bot a un salon vocal et joue la musique")
-@app_commands.describe(salon="Choisis un salon vocal")
-@app_commands.autocomplete(salon=vocal_autocomplete)
-async def connecter(interaction: discord.Interaction, salon: str):
-    await interaction.response.defer(ephemeral=True)
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    guild = interaction.guild
-    channel = guild.get_channel(int(salon))
+    @discord.ui.button(label="Prendre en charge", style=discord.ButtonStyle.success, custom_id="ticket_claim", emoji="✋")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
+        is_support = support_role and support_role in interaction.user.roles
+        is_admin = interaction.user.guild_permissions.administrator
 
-    if channel is None or not isinstance(channel, discord.VoiceChannel):
-        await interaction.followup.send("Salon vocal introuvable.", ephemeral=True)
-        return
+        if not is_support and not is_admin:
+            await interaction.response.send_message("Seul le support peut prendre en charge un ticket.", ephemeral=True)
+            return
 
-    try:
-        vc = await connect_voice(channel)
-    except Exception as e:
-        await interaction.followup.send(f"Erreur : {e}", ephemeral=True)
-        return
+        button.disabled = True
+        button.label = f"Pris en charge par {interaction.user.display_name}"
+        await interaction.response.edit_message(view=self)
 
-    await asyncio.sleep(1)
-    play_music(vc)
-    await interaction.followup.send(f"Connecte a **#{channel.name}**.", ephemeral=True)
+        embed = discord.Embed(description=f"Ticket pris en charge par {interaction.user.mention}.", color=0x57f287)
+        await interaction.channel.send(embed=embed)
 
-@bot.tree.command(name="deconnecter", description="Deconnecte le bot du salon vocal")
-async def deconnecter(interaction: discord.Interaction):
-    guild = interaction.guild
-    if guild.voice_client and guild.voice_client.is_connected():
-        guild.voice_client.stop()
-        await guild.voice_client.disconnect(force=True)
-        await interaction.response.send_message("Deconnecte.", ephemeral=True)
+    @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.danger, custom_id="ticket_close", emoji="🔒")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
+        is_support = support_role and support_role in interaction.user.roles
+        is_admin = interaction.user.guild_permissions.administrator
+        opener_name = interaction.channel.name.replace("ticket-", "")
+        is_opener = interaction.user.name.lower() == opener_name
+
+        if not is_support and not is_admin and not is_opener:
+            await interaction.response.send_message("Tu n'as pas la permission de fermer ce ticket.", ephemeral=True)
+            return
+
+        embed = discord.Embed(description=f"Ticket ferme par {interaction.user.mention}. Suppression dans 5 secondes...", color=0xed4245)
+        await interaction.response.send_message(embed=embed)
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+@bot.tree.command(name="panel-ticket", description="Creer le panel de tickets dans ce salon")
+@app_commands.checks.has_permissions(administrator=True)
+async def panel_ticket(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Support",
+        description="Tu as besoin d'aide ?\nSelectionne le type de ticket dans le menu ci-dessous et un membre du support te repondra.",
+        color=0x2b2d31
+    )
+    if interaction.guild.icon:
+        embed.set_footer(text=interaction.guild.name, icon_url=interaction.guild.icon.url)
     else:
-        await interaction.response.send_message("Le bot n'est pas dans un salon vocal.", ephemeral=True)
+        embed.set_footer(text=interaction.guild.name)
 
-@bot.tree.command(name="pause", description="Met la musique en pause")
-async def pause(interaction: discord.Interaction):
-    guild = interaction.guild
-    if guild.voice_client and guild.voice_client.is_playing():
-        guild.voice_client.pause()
-        await interaction.response.send_message("Musique en pause.", ephemeral=True)
-    else:
-        await interaction.response.send_message("Aucune musique en cours.", ephemeral=True)
-
-@bot.tree.command(name="reprendre", description="Reprend la musique")
-async def reprendre(interaction: discord.Interaction):
-    guild = interaction.guild
-    if guild.voice_client and guild.voice_client.is_paused():
-        guild.voice_client.resume()
-        await interaction.response.send_message("Musique reprise.", ephemeral=True)
-    else:
-        await interaction.response.send_message("La musique n'est pas en pause.", ephemeral=True)
+    view = TicketPanelView()
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.response.send_message("Panel cree.", ephemeral=True)
 
 @bot.event
 async def on_ready():
+    bot.add_view(TicketPanelView())
+    bot.add_view(TicketControlView())
     print(f"Connecte : {bot.user} (ID: {bot.user.id})")
-    ffmpeg_found = os.system("which ffmpeg > /dev/null 2>&1") == 0
-    print(f"FFmpeg : {'ok' if ffmpeg_found else 'INTROUVABLE'}")
-    print(f"music.mp3 : {'trouve' if os.path.exists(MUSIC_FILE) else 'INTROUVABLE'}")
-    print(f"Python : {sys.version}")
 
 if __name__ == "__main__":
     if not TOKEN:
