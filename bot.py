@@ -287,14 +287,14 @@ async def create_ticket(interaction: discord.Interaction, ticket_key: str):
 class TicketControlSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Réclamer le ticket",    emoji="✋", value="claim",    description="Prendre en charge ce ticket"),
-            discord.SelectOption(label="Relâcher le ticket",    emoji="🔓", value="unclaim",  description="Libérer la prise en charge"),
+            discord.SelectOption(label="Réclamer le ticket",   emoji="✅", value="claim",    description="Prendre en charge ce ticket"),
+            discord.SelectOption(label="Relâcher le ticket",   emoji="↩️", value="unclaim",  description="Libérer la prise en charge du ticket"),
             discord.SelectOption(label="Transférer le ticket",  emoji="🔁", value="transfer", description="Transférer à un autre membre du support"),
-            discord.SelectOption(label="Rappel au membre",      emoji="🔔", value="remind",   description="Ghost ping le membre pour lui rappeler son ticket"),
-            discord.SelectOption(label="Fermer le ticket",      emoji="🔒", value="close",    description="Fermer et supprimer ce ticket"),
+            discord.SelectOption(label="Envoyer un rappel",    emoji="🔔", value="remind",   description="Envoyer un rappel au membre"),
+            discord.SelectOption(label="Fermer le ticket",     emoji="🔒", value="close",    description="Fermer et archiver ce ticket"),
         ]
         super().__init__(
-            placeholder="Gérer le ticket...",
+            placeholder="Actions du ticket  —  Réservé au staff",
             min_values=1, max_values=1,
             options=options,
             custom_id="ticket_control_select"
@@ -302,8 +302,12 @@ class TicketControlSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         support_role = interaction.guild.get_role(SUPPORT_ROLE_ID)
-        # Vérifie que c'est bien un membre du support (ou admin)
         is_support = (support_role and support_role in interaction.user.roles) or interaction.user.guild_permissions.administrator
+
+        # Bloque immédiatement si pas staff
+        if not is_support:
+            await interaction.response.send_message("Ce menu est réservé aux membres du Support Ticket.", ephemeral=True)
+            return
 
         action = self.values[0]
 
@@ -499,20 +503,43 @@ class TicketPanelView(discord.ui.View):
 @app_commands.checks.has_permissions(administrator=True)
 async def panel_ticket(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="Support",
+        title="🎫  Bienvenue au support de SCP: Site-11 | RP FR",
         description=(
-            "Tu as besoin d'aide ? Sélectionne le type de ticket ci-dessous.\n\n"
-            "❓ **Ticket Question**\nUne question sur le serveur, les règles ou autre chose.\n\n"
-            "🎮 **Report Joueur**\nSignaler un joueur pour comportement inapproprié.\n\n"
-            "👥 **Report Personnel**\nSignaler un staff ou un membre de l'animation.\n\n"
-            "💻 **Report Développement**\nSignaler un bug ou un problème technique."
+            "Bonjour et bienvenue sur le support du serveur **SCP: Site-11 | RP FR** !\n\n"
+            "Notre équipe est disponible pour répondre à toutes tes demandes. "
+            "Avant d'ouvrir un ticket, assure-toi de choisir la **bonne catégorie** "
+            "afin que ta demande soit traitée le plus rapidement possible.\n\n"
+            "─────────────────────────────────\n\n"
+            "❓ **Ticket Question**\n"
+            "Tu as une question sur le serveur, le lore, le règlement ou le fonctionnement du RP ? "
+            "Ouvre un ticket ici et un membre de l'équipe te répondra dès que possible.\n\n"
+            "🎮 **Report Joueur**\n"
+            "Tu souhaites signaler un joueur pour comportement inapproprié, harcèlement, "
+            "tricherie ou non-respect des règles du serveur ? "
+            "Prépare des preuves (captures d'écran, vidéos) avant d'ouvrir ce ticket.\n\n"
+            "👥 **Report Personnel**\n"
+            "Tu souhaites signaler un membre du **Staff** ou de l'équipe **Animation** pour "
+            "un abus de pouvoir, un comportement incorrect ou tout autre manquement à ses obligations ? "
+            "Ce ticket est strictement confidentiel et sera traité avec la plus grande attention.\n\n"
+            "💻 **Report Développement**\n"
+            "Tu as découvert un bug, un exploit, un problème technique ou tu souhaites "
+            "soumettre une suggestion au pôle développement ? "
+            "Décris le problème de manière précise et joins des preuves si possible.\n\n"
+            "─────────────────────────────────\n\n"
+            "⚠️ **IMPORTANT**\n\n"
+            "Merci de **respecter les catégories** pour un meilleur traitement de tes demandes. "
+            "Les tickets ouverts dans une mauvaise catégorie pourront être fermés sans réponse.\n\n"
+            "Nous te demandons également de faire preuve de **patience** : "
+            "en période chargée, les délais de réponse peuvent être plus longs que d'habitude. "
+            "Notre équipe fait tout son possible pour traiter chaque demande dans les meilleurs délais.\n\n"
+            "Merci de ta compréhension et de ta coopération. Nous sommes là pour t'aider ! 🤝"
         ),
         color=0x2b2d31
     )
     if interaction.guild.icon:
-        embed.set_footer(text=interaction.guild.name, icon_url=interaction.guild.icon.url)
+        embed.set_footer(text="SCP: Site-11 | RP FR • Support", icon_url=interaction.guild.icon.url)
     else:
-        embed.set_footer(text=interaction.guild.name)
+        embed.set_footer(text="SCP: Site-11 | RP FR • Support")
     await interaction.channel.send(embed=embed, view=TicketPanelView())
     await interaction.response.send_message("Panel créé.", ephemeral=True)
 
